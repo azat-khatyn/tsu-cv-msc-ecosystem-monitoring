@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from repository_models import User, SessionLocal  # Импортируем модель и сессию из предыдущего шага
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from model.new_model import predict
 
 # Загружаем переменные окружения
@@ -37,6 +38,7 @@ def add_user_to_db(user_id: int, username: str):
     db.commit()
     db.close()
 
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -63,16 +65,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка нажатия кнопки "Зарегистрироваться"
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(123)
     user_id = update.message.from_user.id
     username = update.message.from_user.username
 
     # Добавляем пользователя в базу данных
     add_user_to_db(user_id, username)
 
-    keyboard = [["ResNet50", "Yolo"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    reply_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
-        "Вы успешно зарегистрирован!",
+        "Вы успешно зарегистрированы!",
         reply_markup=reply_markup,
     )
 
@@ -81,7 +83,21 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка неизвестных команд
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Извините, я не понимаю эту команду.")
+    keyboard = [["Начать"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(
+        f"Извините, я не понимаю эту команду. Воспользуйтесь кнопками меню",
+        reply_markup=reply_markup,
+    )
+
+# Обработка неизвестного текста
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [["Начать"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(
+        f"Извините, я не понимаю эту команду. Воспользуйтесь кнопками меню",
+        reply_markup=reply_markup,
+    )
 
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,47 +133,85 @@ async def classify_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username
 
-    # Проверяем, зарегистрирован ли пользователь
-    if not check_user_in_db(user_id):
-        # Регистрируем пользователя
-        add_user_to_db(user_id, username)
-        await update.message.reply_text("Ты успешно зарегистрирован!")
+    # Проверяем, есть ли пользователь в базе данных
+    if check_user_in_db(user_id):
+        # Получаем фотографию
+        photo_file = await update.message.photo[-1].get_file()  # Берем фото с самым высоким разрешением
+        file_path = os.path.join(PHOTOS_DIR, f"{user_id}.jpg")  # Сохраняем фото с именем user_id.jpg
 
-    # Получаем фотографию
-    photo_file = await update.message.photo[-1].get_file()  # Берем фото с самым высоким разрешением
-    file_path = os.path.join(PHOTOS_DIR, f"{user_id}.jpg")  # Сохраняем фото с именем user_id.jpg
+        # Скачиваем фото
+        await photo_file.download_to_drive(file_path)
 
-    # Скачиваем фото
-    await photo_file.download_to_drive(file_path)
+        # Предсказание класса
+        predicted_class = predict(file_path)
+        print(f"Предсказанный класс: {predicted_class}")
 
-    # Предсказание класса
-    predicted_class = predict(file_path)
-    print(f"Предсказанный класс: {predicted_class}")
+        keyboard = [["Выйти в главное меню"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            f"Сlass = {predicted_class}\n Загрузите следующее изображение",
+            reply_markup=reply_markup,
 
-    keyboard = [["Выйти в главное меню"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(
-        f"Сlass = {predicted_class}\n Загрузите следующее изображение",
-        reply_markup = reply_markup,
+        )
 
-    )
+    else:
+        # Создаем клавиатуру с кнопкой "Зарегистрироваться"
+        keyboard = [["Зарегистрироваться", "Отмена"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            f"Привет, {username}! Ты не зарегистрирован. Нажми кнопку ниже, чтобы зарегистрироваться.",
+            reply_markup=reply_markup,
+        )
+
+
 
 # Отмена регистрации
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+
+    keyboard = [["Начать"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+    # Проверяем, есть ли пользователь в базе данных
+    if check_user_in_db(user_id):
+        reply_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            f"Привет, {username}! Выбери модель, которую следует применить",
+            reply_markup=reply_markup,
+        )
+
+        return ConversationHandler.END
+
     await update.message.reply_text(
         "Отмена действия. Начните заново с помощью команды /start",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=reply_markup,
     )
     return ConversationHandler.END
 
 # Выход в главное меню
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
 
-    reply_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(
-        "Вы перешли в главное меню!",
-        reply_markup=reply_markup,
-    )
+    # Проверяем, есть ли пользователь в базе данных
+    if check_user_in_db(user_id):
+        reply_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            "Вы перешли в главное меню!",
+            reply_markup=reply_markup,
+        )
+
+    else:
+        # Создаем клавиатуру с кнопкой "Зарегистрироваться"
+        keyboard = [["Зарегистрироваться", "Отмена"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            f"Привет, {username}! Ты не зарегистрирован. Нажми кнопку ниже, чтобы зарегистрироваться.",
+            reply_markup=reply_markup,
+        )
+
+
     return ConversationHandler.END
 
 
@@ -168,7 +222,7 @@ if __name__ == "__main__":
 
     # Создаем ConversationHandler для обработки регистрации
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[MessageHandler(filters.Text("Начать"), start)],
         states={
             REGISTER: [MessageHandler(filters.Text("Зарегистрироваться"), register)],
         },
@@ -187,8 +241,10 @@ if __name__ == "__main__":
     # Регистрируем обработчики
     application.add_handler(conv_handler)
     application.add_handler(conv_handler_ResNet50)
+    application.add_handler(MessageHandler(filters.Text("Выйти в главное меню"), main_menu))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.COMMAND, unknown))
+    application.add_handler(MessageHandler(filters.TEXT, unknown_text))
 
     # Запускаем бота
     print("Бот запущен...")
