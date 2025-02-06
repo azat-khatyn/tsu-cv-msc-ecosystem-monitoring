@@ -5,6 +5,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from repository_models import User, SessionLocal  # Импортируем модель и сессию из предыдущего шага
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from model.new_model import predict
+import asyncio
+import queue
+import threading
+import time
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -15,6 +19,9 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Папка для сохранения фотографий
 PHOTOS_DIR = "user_photos"
 os.makedirs(PHOTOS_DIR, exist_ok=True)  # Создаем папку, если она не существует
+
+# Потокобезопасная очередь для передачи сообщений
+message_queue = queue.Queue()
 
 # Состояния для ConversationHandler
 REGISTER = 1
@@ -215,8 +222,13 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Запуск бота
-if __name__ == "__main__":
+def start_bot():
+
+    # Создаем новый цикл событий для этого потока
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    global application
     # Создаем приложение бота
     application = Application.builder().token(TOKEN).build()
 
@@ -229,8 +241,7 @@ if __name__ == "__main__":
         fallbacks=[MessageHandler(filters.Text("Отмена"), cancel)],
     )
 
-
-    conv_handler_ResNet50 = ConversationHandler(
+    conv_handler_resnet50 = ConversationHandler(
         entry_points=[MessageHandler(filters.Text("ResNet50"), load_image)],
         states={
             CLASSIFY_IMAGE: [MessageHandler(filters.PHOTO, classify_image)],
@@ -240,12 +251,63 @@ if __name__ == "__main__":
 
     # Регистрируем обработчики
     application.add_handler(conv_handler)
-    application.add_handler(conv_handler_ResNet50)
+    application.add_handler(conv_handler_resnet50)
     application.add_handler(MessageHandler(filters.Text("Выйти в главное меню"), main_menu))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.COMMAND, unknown))
     application.add_handler(MessageHandler(filters.TEXT, unknown_text))
 
+
     # Запускаем бота
     print("Бот запущен...")
+    # return application
     application.run_polling()
+
+
+
+# Функция, которая выполняется в отдельном потоке и генерирует сообщения
+def generate_messages():
+    time.sleep(2)
+    for i in range(5):  # Генерируем 5 сообщений
+        message = f"Сообщение {i + 1} из функции"
+        print(f"Функция: Сгенерировано сообщение: {message}")
+        message_queue.put(message)  # Отправляем сообщение в очередь
+        time.sleep(2)  # Имитация долгой работы
+    message_queue.put(None)  # Сигнал о завершении работы
+
+
+# Функция для отправки сообщения в бот
+async def send_messages_from_queue():
+    while True:
+        db = SessionLocal()
+        users = db.query(User)
+        db.close()
+        message = message_queue.get()  # Получаем сообщение из очереди
+        if message is None:  # Сигнал о завершении
+            break
+        for user in users:
+            try:
+                await application.bot.send_message(chat_id=user.user_id, text=message)
+                print(f"Бот: Сообщение отправлено пользователю {user.username}")
+            except Exception as e:
+                print(f"Бот: Ошибка при отправке сообщения пользователю {user.username}: {e}")
+        message_queue.task_done()  # Сообщаем, что сообщение обработано
+
+
+# Запуск бота
+if __name__ == "__main__":
+    # Запуск бота в отдельном потоке
+    bot_thread = threading.Thread(target=start_bot)
+    bot_thread.start()
+
+    # # Запуск функции в отдельном потоке
+    message_thread = threading.Thread(target=generate_messages)
+    message_thread.start()
+
+    # Запуск отправки сообщений из очереди
+    # Используем asyncio для асинхронной отправки
+    asyncio.run(send_messages_from_queue())
+
+    # Ожидаем завершения потоков
+    message_thread.join()
+    bot_thread.join()
