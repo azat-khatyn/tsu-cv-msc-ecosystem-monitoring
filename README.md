@@ -96,9 +96,8 @@ python main.py
 
 
 ```plaintext
-tsu-cv-msc-ecosystem-monitoring/
-
-📦 project-root
+tsu-cv-msc-ecosystem-monitoring
+│
 └── app                             # Бот для инференса
 │    ├──  model
 │    │      ├── new_model.py
