@@ -9,6 +9,8 @@ import asyncio
 import queue
 import threading
 import time
+import cv2
+import datetime
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -232,6 +234,9 @@ def start_bot():
     # Создаем приложение бота
     application = Application.builder().token(TOKEN).build()
 
+    # Запуск асинхронного процесса отправки сообщений
+    loop.create_task(send_messages_from_queue(application))
+
     # Создаем ConversationHandler для обработки регистрации
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Text("Начать"), start)],
@@ -264,20 +269,46 @@ def start_bot():
     application.run_polling()
 
 
-
 # Функция, которая выполняется в отдельном потоке и генерирует сообщения
 def generate_messages():
     time.sleep(2)
-    for i in range(5):  # Генерируем 5 сообщений
-        message = f"Сообщение {i + 1} из функции"
-        print(f"Функция: Сгенерировано сообщение: {message}")
-        message_queue.put(message)  # Отправляем сообщение в очередь
-        time.sleep(2)  # Имитация долгой работы
+
+    # for i in range(5):  # Генерируем 5 сообщений
+    #     message = f"Сообщение {i + 1} из функции"
+    #     print(f"Функция: Сгенерировано сообщение: {message}")
+    #     message_queue.put(message)  # Отправляем сообщение в очередь
+    #     time.sleep(2)  # Имитация долгой работы
+    # message_queue.put(None)  # Сигнал о завершении работы
+
+
+    # cоздаём объект для захвата видео с камеры (0 — индекс стандартной веб-камеры)
+    capture = cv2.VideoCapture(0)
+
+    while True:
+        # ret — флаг успешности захвата, img — текущий кадр в виде массива numpy
+        ret, video = capture.read()
+        if not ret:
+            break
+
+        # Получаем текущее время
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Сохраняем изображение с текущей датой и временем
+        filename = f"frame_{timestamp}.jpg"
+        cv2.imwrite(filename, video)
+        print(f"Сохранён кадр: {filename}")
+        message_queue.put(filename)
+        time.sleep(60)
+
     message_queue.put(None)  # Сигнал о завершении работы
+    # корректно освобождаем камеру и закрываем окна после завершения.
+    capture.release()
+
 
 
 # Функция для отправки сообщения в бот
-async def send_messages_from_queue():
+async def send_messages_from_queue(application):
     while True:
         db = SessionLocal()
         users = db.query(User)
@@ -287,7 +318,16 @@ async def send_messages_from_queue():
             break
         for user in users:
             try:
-                await application.bot.send_message(chat_id=user.user_id, text=message)
+                prediction_class = predict(message)
+                if prediction_class == 1:
+                    with open(message, 'rb') as photo:
+                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="На фотографии пожар!!!")
+                elif prediction_class == 0:
+                    with open(message, 'rb') as photo:
+                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="Пожара нет, не беспокойтесь.")
+                else:
+                    with open(message, 'rb') as photo:
+                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="Не распознан класс")
                 print(f"Бот: Сообщение отправлено пользователю {user.username}")
             except Exception as e:
                 print(f"Бот: Ошибка при отправке сообщения пользователю {user.username}: {e}")
@@ -297,16 +337,16 @@ async def send_messages_from_queue():
 # Запуск бота
 if __name__ == "__main__":
     # Запуск бота в отдельном потоке
-    bot_thread = threading.Thread(target=start_bot)
+    bot_thread = threading.Thread(target=start_bot, daemon=True)
     bot_thread.start()
 
     # # Запуск функции в отдельном потоке
-    message_thread = threading.Thread(target=generate_messages)
+    message_thread = threading.Thread(target=generate_messages, daemon=True)
     message_thread.start()
 
     # Запуск отправки сообщений из очереди
     # Используем asyncio для асинхронной отправки
-    asyncio.run(send_messages_from_queue())
+    # asyncio.run(send_messages_from_queue())
 
     # Ожидаем завершения потоков
     message_thread.join()
