@@ -1,14 +1,10 @@
 import os
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from repository_models import User, SessionLocal  # Импортируем модель и сессию из предыдущего шага
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from repository_models import User, SessionLocal
 from model.new_model import predict
 import asyncio
-import queue
-import threading
-import time
 import cv2
 import datetime
 
@@ -20,17 +16,19 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Папка для сохранения фотографий
 PHOTOS_DIR = "user_photos"
+CAMERA_FRAME_DIR = "camera_photos"
 os.makedirs(PHOTOS_DIR, exist_ok=True)  # Создаем папку, если она не существует
+os.makedirs(CAMERA_FRAME_DIR, exist_ok=True)  # Создаем папку, если она не существует
 
 # Потокобезопасная очередь для передачи сообщений
-message_queue = queue.Queue()
+message_queue = asyncio.Queue()
 
 # Состояния для ConversationHandler
 REGISTER = 1
-
-CLASSIFY_IMAGE = 1
+CLASSIFY_IMAGE = 2
 
 main_keyboard = [["ResNet50", "Yolo", "GoogLeNet"]]
+
 
 # Функция для проверки пользователя в базе данных
 def check_user_in_db(user_id: int) -> bool:
@@ -38,6 +36,7 @@ def check_user_in_db(user_id: int) -> bool:
     user = db.query(User).filter(User.user_id == user_id).first()
     db.close()
     return user is not None
+
 
 # Функция для добавления пользователя в базу данных
 def add_user_to_db(user_id: int, username: str):
@@ -74,7 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка нажатия кнопки "Зарегистрироваться"
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(123)
     user_id = update.message.from_user.id
     username = update.message.from_user.username
 
@@ -99,6 +97,7 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
 
+
 # Обработка неизвестного текста
 async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Начать"]]
@@ -107,6 +106,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Извините, я не понимаю эту команду. Воспользуйтесь кнопками меню",
         reply_markup=reply_markup,
     )
+
 
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,6 +119,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{username}, ты написал: {text}")
     else:
         await update.message.reply_text("Сначала зарегистрируйся с помощью команды /start.")
+
 
 # Обработка текстовых сообщений
 async def load_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -137,7 +138,6 @@ async def load_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала зарегистрируйся с помощью команды /start.")
 
 
-
 async def classify_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username
@@ -153,7 +153,13 @@ async def classify_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Предсказание класса
         predicted_class = predict(file_path)
-        print(f"Предсказанный класс: {predicted_class}")
+
+        caption = "Неизвестный класс"
+        if predicted_class == 1:
+            caption = "На фотографии пожар!!!"
+        elif predicted_class == 0:
+            caption = "Пожара нет, не беспокойтесь."
+        print(f"Предсказанный класс: {predicted_class},/n{caption}")
 
         keyboard = [["Выйти в главное меню"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -171,7 +177,6 @@ async def classify_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Привет, {username}! Ты не зарегистрирован. Нажми кнопку ниже, чтобы зарегистрироваться.",
             reply_markup=reply_markup,
         )
-
 
 
 # Отмена регистрации
@@ -197,6 +202,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
     return ConversationHandler.END
+
 
 # Выход в главное меню
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,18 +230,79 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-def start_bot():
+# Функция, которая выполняется в отдельном потоке и генерирует сообщения
+async def generate_messages():
+    # Ждем, чтобы бот успел запуститься
+    await asyncio.sleep(20)
 
-    # Создаем новый цикл событий для этого потока
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # cоздаём объект для захвата видео с камеры (0 — индекс стандартной веб-камеры)
+    capture = cv2.VideoCapture(0)
+    if not capture.isOpened():
+        print("Ошибка: Камера недоступна.")
+        return
+
+    try:
+        while True:
+            # ret — флаг успешности захвата, img — текущий кадр в виде массива numpy
+            ret, video = capture.read()
+            if not ret:
+                print("Ошибка: не удалось получить кадр с камеры.")
+                await asyncio.sleep(2)  # Ждем перед повторной попыткой
+                continue
+
+            # Получаем текущее время
+            now = datetime.datetime.now()
+            timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+            # Сохраняем изображение с текущей датой и временем
+            filename =os.path.join(CAMERA_FRAME_DIR, f"frame_{timestamp}.jpg")
+            cv2.imwrite(filename, video)
+            print(f"Сохранён кадр: {filename}")
+            await message_queue.put(filename)
+
+            # Ожидание перед следующим кадром
+            await asyncio.sleep(60)
+    finally:
+        # корректно освобождаем камеру и закрываем окна после завершения.
+        capture.release()
+
+
+# Функция для отправки сообщения в бот
+async def send_messages_from_queue():
+    while True:
+        db = SessionLocal()
+        users = db.query(User).all()
+        db.close()
+
+        message = await message_queue.get()  # Асинхронное получение из очереди
+        if message is None:  # Сигнал о завершении
+            break
+
+        # Классифицируем изображение
+        predicted_class = predict(message)
+
+        caption = "Неизвестный класс"
+        if predicted_class == 1:
+            caption = "На фотографии пожар!!!"
+        elif predicted_class == 0:
+            caption = "Пожара нет, не беспокойтесь."
+
+        for user in users:
+            try:
+                with open(message, 'rb') as photo:
+                    await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption=caption)
+                print(f"Фото отправлено пользователю {user.username}")
+            except Exception as e:
+                print(f"Ошибка отправки фото {user.username}: {e}")
+
+        message_queue.task_done()  # Помечаем задачу как выполненную
+
+
+async def start_bot():
 
     global application
     # Создаем приложение бота
     application = Application.builder().token(TOKEN).build()
-
-    # Запуск асинхронного процесса отправки сообщений
-    loop.create_task(send_messages_from_queue(application))
 
     # Создаем ConversationHandler для обработки регистрации
     conv_handler = ConversationHandler(
@@ -262,92 +329,20 @@ def start_bot():
     application.add_handler(MessageHandler(filters.COMMAND, unknown))
     application.add_handler(MessageHandler(filters.TEXT, unknown_text))
 
+    # Инициализация и запуск бота
+    await application.initialize()
+    await application.start()
+    # Запуск polling’а в асинхронном режиме (не блокирует event loop)
+    polling_task = asyncio.create_task(application.updater.start_polling())
 
-    # Запускаем бота
-    print("Бот запущен...")
-    # return application
-    application.run_polling()
+    # Запуск параллельных задач для камеры и отправки сообщений
+    generate_task = asyncio.create_task(generate_messages())
+    send_message_task = asyncio.create_task(send_messages_from_queue())
 
-
-# Функция, которая выполняется в отдельном потоке и генерирует сообщения
-def generate_messages():
-    time.sleep(2)
-
-    # for i in range(5):  # Генерируем 5 сообщений
-    #     message = f"Сообщение {i + 1} из функции"
-    #     print(f"Функция: Сгенерировано сообщение: {message}")
-    #     message_queue.put(message)  # Отправляем сообщение в очередь
-    #     time.sleep(2)  # Имитация долгой работы
-    # message_queue.put(None)  # Сигнал о завершении работы
-
-
-    # cоздаём объект для захвата видео с камеры (0 — индекс стандартной веб-камеры)
-    capture = cv2.VideoCapture(0)
-
-    while True:
-        # ret — флаг успешности захвата, img — текущий кадр в виде массива numpy
-        ret, video = capture.read()
-        if not ret:
-            break
-
-        # Получаем текущее время
-        now = datetime.datetime.now()
-        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-
-        # Сохраняем изображение с текущей датой и временем
-        filename = f"frame_{timestamp}.jpg"
-        cv2.imwrite(filename, video)
-        print(f"Сохранён кадр: {filename}")
-        message_queue.put(filename)
-        time.sleep(60)
-
-    message_queue.put(None)  # Сигнал о завершении работы
-    # корректно освобождаем камеру и закрываем окна после завершения.
-    capture.release()
-
-
-
-# Функция для отправки сообщения в бот
-async def send_messages_from_queue(application):
-    while True:
-        db = SessionLocal()
-        users = db.query(User)
-        db.close()
-        message = message_queue.get()  # Получаем сообщение из очереди
-        if message is None:  # Сигнал о завершении
-            break
-        for user in users:
-            try:
-                prediction_class = predict(message)
-                if prediction_class == 1:
-                    with open(message, 'rb') as photo:
-                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="На фотографии пожар!!!")
-                elif prediction_class == 0:
-                    with open(message, 'rb') as photo:
-                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="Пожара нет, не беспокойтесь.")
-                else:
-                    with open(message, 'rb') as photo:
-                        await application.bot.send_photo(chat_id=user.user_id, photo=photo, caption="Не распознан класс")
-                print(f"Бот: Сообщение отправлено пользователю {user.username}")
-            except Exception as e:
-                print(f"Бот: Ошибка при отправке сообщения пользователю {user.username}: {e}")
-        message_queue.task_done()  # Сообщаем, что сообщение обработано
+    # Ожидаем выполнения обеих задач (или можно добавить idle для ожидания завершения)
+    await asyncio.gather(polling_task, generate_task, send_message_task)
 
 
 # Запуск бота
 if __name__ == "__main__":
-    # Запуск бота в отдельном потоке
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-
-    # # Запуск функции в отдельном потоке
-    message_thread = threading.Thread(target=generate_messages, daemon=True)
-    message_thread.start()
-
-    # Запуск отправки сообщений из очереди
-    # Используем asyncio для асинхронной отправки
-    # asyncio.run(send_messages_from_queue())
-
-    # Ожидаем завершения потоков
-    message_thread.join()
-    bot_thread.join()
+    asyncio.run(start_bot())
