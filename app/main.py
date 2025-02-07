@@ -159,12 +159,13 @@ async def classify_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption = "На фотографии пожар!!!"
         elif predicted_class == 0:
             caption = "Пожара нет, не беспокойтесь."
-        print(f"Предсказанный класс: {predicted_class},/n{caption}")
+
+        print(f"Предсказанный класс: {predicted_class}")
 
         keyboard = [["Выйти в главное меню"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text(
-            f"Сlass = {predicted_class}\n Загрузите следующее изображение",
+            f"Сlass = {predicted_class}\n{caption}\n\nЗагрузите следующее изображение",
             reply_markup=reply_markup,
 
         )
@@ -233,7 +234,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Функция, которая выполняется в отдельном потоке и генерирует сообщения
 async def generate_messages():
     # Ждем, чтобы бот успел запуститься
-    await asyncio.sleep(20)
+    await asyncio.sleep(5)
 
     # cоздаём объект для захвата видео с камеры (0 — индекс стандартной веб-камеры)
     capture = cv2.VideoCapture(0)
